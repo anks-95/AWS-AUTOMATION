@@ -1,0 +1,143 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy S3 Bucket for recieving AWS Org CloudTrail or Config Events
+
+Parameters:
+
+  pEventBucketName:
+    Description: Name of the bucket to create for storing the CloudTrail or Config Events
+    Type: String
+    AllowedPattern: "^[0-9a-zA-Z]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$"
+
+  pTransitionToIADays:
+    Description: Days after object creation before the object is transitioned to InfrequentAccess (Must be >= 30)
+    Type: String
+    Default: 30
+
+  pService:
+    Description: Service which will use this Bucket (Cloudtrail or Config)
+    Type: String
+    AllowedValues:
+      - cloudtrail.amazonaws.com
+      - config.amazonaws.com
+
+Resources:
+
+  EventsS3Bucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketName: !Ref 'pEventBucketName'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !Ref EventTopic
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: "AWSLogs/"
+                  - Name: suffix
+                    Value: ".json.gz"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: False  # This rule also prohibits Cross-Account bucket access
+      LifecycleConfiguration:
+        Rules:
+          - Id: InfrequentAccessRule
+            Prefix: AWSLogs
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: !Ref pTransitionToIADays
+                StorageClass: STANDARD_IA
+
+  EventsS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'EventsS3Bucket'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AWSServiceAclCheck
+          Effect: Allow
+          Principal:
+            Service: !Ref pService
+          Action: s3:GetBucketAcl
+          Resource: !Sub "arn:aws:s3:::${pEventBucketName}"
+        - Sid: AWSServiceWrite
+          Effect: Allow
+          Principal:
+            Service: !Ref pService
+          Action: s3:PutObject
+          Resource: !Sub "arn:aws:s3:::${pEventBucketName}/AWSLogs/*"
+          Condition:
+            StringEquals:
+              s3:x-amz-acl: bucket-owner-full-control
+
+
+  # Define an SNS Topic for Logfile delivery
+  EventTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Notification Topic for Cloudtrail or Config Events
+
+  EventTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref 'EventTopic']
+      PolicyDocument:
+        Version: '2010-09-09'
+        Statement:
+        - Sid: AWSServiceSNSPolicy
+          Effect: Allow
+          Principal:
+            Service: !Ref pService
+          Resource: '*'
+          Action: SNS:Publish
+        - Sid: AllowSubscribe
+          Effect: Allow
+          Principal:
+            AWS: !Ref AWS::AccountId
+          Resource: '*'
+          Action: sns:Subscribe
+        - Sid: AllowBucketPublish
+          Effect: Allow
+          Principal:
+            AWS: "*"
+          Action:
+          - SNS:Publish
+          Resource:
+          - !Ref EventTopic
+          Condition:
+            ArnLike:
+              aws:SourceArn: !Sub "arn:aws:s3:*:*:${pEventBucketName}"
+            StringEquals:
+              aws:SourceAccount: !Ref AWS::AccountId
+
+
+Outputs:
+  EventTopicArn:
+    Value: !Ref 'EventTopic'
+    Description: ARN of the SNS Topic Created
+
+  EventTopicName:
+    Value: !GetAtt EventTopic.TopicName
+    Description: Name of the SNS Topic Created
+
+  LogBucket:
+    Value: !Ref pEventBucketName
+    Description: Bucket Name where CloudTrail or Config events sent.
+
+  TemplateVersion:
+    Value: 1.1.0

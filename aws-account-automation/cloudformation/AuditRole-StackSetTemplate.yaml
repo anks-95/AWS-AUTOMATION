@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy the a Security Audit Role in all account in your Organization
+
+Parameters:
+
+  AuditorAccountNumber:
+    Description: The 12 digit AWS account number to grant access to.
+    Default: '123456789012'
+    MinLength: '12'
+    AllowedPattern: '[0-9]+'
+    MaxLength: '12'
+    Type: String
+
+  RoleName:
+    Description: The name of the Role to be created
+    Default: 'Auditor'
+    Type: String
+
+  pTemplateURL:
+    Description: Location of the S3 Template to deploy as the StackSet
+    Type: String
+    Default: https://s3.amazonaws.com/pht-cloudformation/aws-account-automation/AuditRole-Template.yaml
+
+  pAWSOrgUnit:
+    Description: AWS Organizations OU to deploy this stackset to. Probably should be the root OU
+    Type: String
+    AllowedPattern: '^(ou-[a-z0-9]{4,32}-[a-z0-9]{8,32}|r-[a-z0-9]{4,32})$'
+
+Resources:
+
+  AuditRoleStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      # AdministrationRoleARN: String
+      AutoDeployment:
+        Enabled: True
+        RetainStacksOnAccountRemoval: True
+      CallAs: DELEGATED_ADMIN
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      Description: Organizational StackSet to Deploy Security Account Audit Role
+      # ExecutionRoleName: String
+      OperationPreferences:
+        FailureTolerancePercentage: 0
+        MaxConcurrentPercentage: 100
+      Parameters:
+        - ParameterKey: AuditorAccountNumber
+          ParameterValue: !Ref AuditorAccountNumber
+        - ParameterKey: RoleName
+          ParameterValue: !Ref RoleName
+      PermissionModel: SERVICE_MANAGED
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds:
+              - !Ref pAWSOrgUnit
+          Regions:
+            - us-east-1
+      StackSetName: !Sub "${AWS::StackName}-StackSet"
+      TemplateURL: !Ref pTemplateURL
+
+
+Outputs:
+  TemplateVersion:
+    Value: "1.1.0"

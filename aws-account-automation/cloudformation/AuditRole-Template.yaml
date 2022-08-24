@@ -1,0 +1,84 @@
+# Copyright 2018-2021 Chris Farris <chrisf@primeharbor.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This template creates a cross account role for audit & security tool management from a dedicated security account
+
+# TemplateSource: https://github.com/jchrisfarris/aws-account-automation/blob/master/cloudformation/AuditRole-Template.yaml
+
+Parameters:
+
+  AuditorAccountNumber:
+    Description: The 12 digit AWS account number to grant access to.
+    Default: '123456789012'
+    MinLength: '12'
+    AllowedPattern: '[0-9]+'
+    MaxLength: '12'
+    Type: String
+  
+  RoleName:
+    Description: The name of the Role to be created
+    Default: 'Auditor'
+    Type: String
+  
+Resources:
+  AuditorCrossAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/SecurityAudit
+      - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action: sts:AssumeRole
+          Sid: ''
+          Effect: Allow
+          Principal:
+            AWS: !Join ['', ['arn:aws:iam::', !Ref 'AuditorAccountNumber',':root']]
+      Policies:
+        - PolicyName: IAMSimulateResources
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action: "iam:Simulate*"
+                Resource: "*"
+        - PolicyName: SecurityAuditTools
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action: 
+                - "trustedAdvisor:*"
+                - "health:*"
+                - "aws-portal:View*"
+                - "guardduty:*"
+                - "macie:*"
+                - "inspector:*"
+                - "support:*"
+                - "guardduty:*"
+                - "securityhub:*"
+                - "ce:*"
+                Resource: "*"
+
+Outputs:
+  RoleARN:
+    Description: The ARN of the Audit role that can be assumed by the other account.
+    Value: !GetAtt [AuditorCrossAccountRole, Arn]
+
+  TemplateVersion:
+    Value: 1.0.1

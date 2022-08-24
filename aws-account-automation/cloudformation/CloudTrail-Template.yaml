@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy The Basic CloudTrail Resources required to monitor the account
+Parameters:
+
+  pLoggingBucketName:
+    Description: Name of the Bucket to Create for CloudTrail Logs
+    Type: String
+  
+  pCloudTrailLogGroupName:
+    Type: String
+    Default: CloudTrail/DefaultLogGroup
+
+  pCreateBucket:
+    Type: String
+    Description: Boolean to create bucket or use existing one
+    AllowedValues:
+      - true
+      - false
+  
+  pCreateTopic:
+    Type: String
+    Description: Boolean to create topic or use existing one
+    AllowedValues:
+      - true
+      - false
+
+Conditions:
+  CreateBucket: !Equals [!Ref 'pCreateBucket', 'true']
+  CreateTopic: !Equals [!Ref 'pCreateTopic', 'true']
+
+Resources:
+
+  LoggingS3Bucket:
+    DeletionPolicy: Retain
+    Condition: CreateBucket
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketName: !Ref 'pLoggingBucketName'
+      VersioningConfiguration:
+        Status: Enabled
+
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    # Condition: CreateBucket
+    Properties:
+      Bucket: !Ref 'pLoggingBucketName'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AWSCloudTrailAclCheck
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Action: s3:GetBucketAcl
+          Resource: !Sub "arn:aws:s3:::${pLoggingBucketName}"
+        - Sid: AWSCloudTrailWrite
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Action: s3:PutObject
+          Resource: !Sub "arn:aws:s3:::${pLoggingBucketName}/AWSLogs/*"
+          Condition:
+            StringEquals:
+              s3:x-amz-acl: bucket-owner-full-control
+        - Sid: DenyDelete
+          Effect: Deny
+          Principal: "*"
+          Action: 
+            - s3:Delete*
+            - s3:PutBucketPolicy
+          Resource: 
+            - !Sub "arn:aws:s3:::${pLoggingBucketName}"
+            - !Sub "arn:aws:s3:::${pLoggingBucketName}/*"
+
+
+
+  # Define an SNS Topic for Logfile delivery 
+  CloudTrailTopic:
+    Condition: CreateTopic
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: CloudTrail Notification Topic
+  CloudTrailTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: CreateTopic
+    Properties:
+      Topics: [!Ref 'CloudTrailTopic']
+      PolicyDocument:
+        Version: '2008-10-17'
+        Statement:
+        - Sid: AWSCloudTrailSNSPolicy
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Resource: '*'
+          Action: SNS:Publish
+
+  # Define an KMS Key to Encrypt the CloudTrail Logs with
+  CloudTrailKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CloudTrail KMS Key
+      Enabled: 'true'
+      EnableKeyRotation: 'true'
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+        - Sid: Allow administration of the key
+          Effect: Allow
+          Principal:
+            AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action: ['kms:Create*', 'kms:Describe*', 'kms:Enable*', 'kms:List*', 'kms:Put*',
+            'kms:Update*', 'kms:Revoke*', 'kms:Disable*', 'kms:Get*', 'kms:Delete*',
+            'kms:ScheduleKeyDeletion', 'kms:CancelKeyDeletion']
+          Resource: '*'
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Action: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey']
+          Resource: '*'
+        - Sid: Allow local use of the key
+          Effect: Allow
+          Principal:
+            AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey']
+          Resource: '*'
+  CloudtrailKMSKeyAlias:
+    Type: "AWS::KMS::Alias"
+    Properties:
+      AliasName: !Sub "alias/${AWS::StackName}KMSKey"
+      TargetKeyId: !Ref CloudTrailKMSKey
+
+  # Define a Log Group to Send the Cloudtrail Events to CloudWatch Logs
+  CloudTrailToCloudWatchLogsRole:
+    Type: "AWS::IAM::Role"
+    Properties: 
+      Path: "/"
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "cloudtrail.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: SendtoCloudWatchLogs
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement:
+            - Sid: AWSCloudTrailCreateLogStream2014110
+              Effect: Allow
+              Action: logs:CreateLogStream
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${pCloudTrailLogGroupName}:log-stream:*
+            - Sid: AWSCloudTrailPutLogEvents20141101
+              Effect: Allow
+              Action: logs:PutLogEvents
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${pCloudTrailLogGroupName}:log-stream:*
+  CloudTrailLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties: 
+      LogGroupName: !Ref pCloudTrailLogGroupName
+      RetentionInDays: 365
+
+  # And Define the CloudTrail. Make it Global and for all regions
+  CloudTrail:
+    DependsOn: 
+    - LoggingBucketPolicy
+    # - CloudTrailTopicPolicy
+    # - Fn::If:
+    #     - CreateTopic
+    #     - CloudTrailTopicPolicy
+    #     - !Ref AWS::NoValue    
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      S3BucketName: !Ref 'pLoggingBucketName'
+      SnsTopicName:
+        Fn::If:
+        - CreateTopic
+        - !GetAtt CloudTrailTopic.TopicName
+        - !Ref AWS::NoValue
+      IsLogging: true
+      KMSKeyId: !Ref 'CloudTrailKMSKey'
+      EnableLogFileValidation: true
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailToCloudWatchLogsRole.Arn
+      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+
+
+Outputs:
+  CloudTrailTopicArn:
+    Condition: CreateTopic
+    Value: !Ref 'CloudTrailTopic'
+    Description: ARN of the SNS Topic Created
+  CloudTrailLogGroup:
+    Value: !Ref pCloudTrailLogGroupName
+    Description: Location in CloudWatch Logs where the CT Events are sent
+  CloudTrailLogGroupArn:
+    Value: !GetAtt CloudTrailLogGroup.Arn
+    Description: ARN Location in CloudWatch Logs where the CT Events are sent
+  LogBucket: 
+    Value: !Ref pLoggingBucketName
+    Description: Bucket Name where CloudTrail and other Logs can be sent. 
+  CloudTrailKMSKeyArn:
+    Value: !GetAtt CloudTrailKMSKey.Arn
+    Description: ARN of the KMS Key used to encrypt events
+  TemplateVersion:
+    Value: 1.0.3
